@@ -37,6 +37,20 @@ def simulate_terminal_prices(S0, T, r, sigma, n_sims, seed=None, Z=None):
     return ST
 
 
+def simulate_single_gbm_path(S0, T, r, sigma, n_steps, seed=None):
+    validate_inputs(S0, T, r, sigma, 1, n_steps)
+
+    rng = np.random.default_rng(seed)
+    dt = T / n_steps
+
+    Z = rng.standard_normal(n_steps)
+    increments = (r - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * Z
+
+    log_path = np.concatenate(([0.0], np.cumsum(increments)))
+    path = S0 * np.exp(log_path)
+    return path
+
+
 def black_scholes_call_price(S0, K, T, r, sigma):
     d1 = (math.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
@@ -52,6 +66,14 @@ def black_scholes_call_delta(S0, K, T, r, sigma):
 def black_scholes_call_gamma(S0, K, T, r, sigma):
     d1 = (math.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     return normal_pdf(d1) / (S0 * sigma * math.sqrt(T))
+
+
+def black_scholes_call_delta_tau(S, K, tau, r, sigma):
+    if tau <= 0:
+        return 1.0 if S > K else 0.0
+
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * tau) / (sigma * math.sqrt(tau))
+    return normal_cdf(d1)
 
 
 def monte_carlo_call_price(S0, K, T, r, sigma, n_sims, seed=None, Z=None):
@@ -83,6 +105,65 @@ def monte_carlo_delta_gamma(S0, K, T, r, sigma, n_sims, h=1.0, seed=42):
     return delta_mc, gamma_mc
 
 
+def simulate_delta_hedge_one_path(S0, K, T, r, sigma, n_steps, seed=None):
+    path = simulate_single_gbm_path(S0, T, r, sigma, n_steps, seed=seed)
+    dt = T / n_steps
+
+    option_price_0 = black_scholes_call_price(S0, K, T, r, sigma)
+    delta_0 = black_scholes_call_delta_tau(S0, K, T, r, sigma)
+
+    stock_position = delta_0
+    cash_account = option_price_0 - stock_position * S0
+
+    hedge_history = [{
+        "step": 0,
+        "time": 0.0,
+        "stock_price": path[0],
+        "delta": stock_position,
+        "cash": cash_account,
+        "portfolio_value": stock_position * path[0] + cash_account
+    }]
+
+    for i in range(1, n_steps + 1):
+        t = i * dt
+        tau = max(T - t, 0.0)
+        S = path[i]
+
+        cash_account *= math.exp(r * dt)
+
+        if i < n_steps:
+            new_delta = black_scholes_call_delta_tau(S, K, tau, r, sigma)
+            delta_change = new_delta - stock_position
+            cash_account -= delta_change * S
+            stock_position = new_delta
+
+        portfolio_value = stock_position * S + cash_account
+
+        hedge_history.append({
+            "step": i,
+            "time": t,
+            "stock_price": S,
+            "delta": stock_position,
+            "cash": cash_account,
+            "portfolio_value": portfolio_value
+        })
+
+    terminal_stock = path[-1]
+    option_payoff = max(terminal_stock - K, 0.0)
+    terminal_portfolio = stock_position * terminal_stock + cash_account
+    hedging_error = terminal_portfolio - option_payoff
+
+    return {
+        "path": path,
+        "hedge_history": hedge_history,
+        "option_price_0": option_price_0,
+        "terminal_stock": terminal_stock,
+        "option_payoff": option_payoff,
+        "terminal_portfolio": terminal_portfolio,
+        "hedging_error": hedging_error
+    }
+
+
 if __name__ == "__main__":
     S0 = 100
     K = 100
@@ -99,8 +180,17 @@ if __name__ == "__main__":
 
     bs_delta = black_scholes_call_delta(S0, K, T, r, sigma)
     bs_gamma = black_scholes_call_gamma(S0, K, T, r, sigma)
-
     mc_delta, mc_gamma = monte_carlo_delta_gamma(S0, K, T, r, sigma, n_sims, h=h, seed=42)
+
+    hedge_result = simulate_delta_hedge_one_path(
+        S0=S0,
+        K=K,
+        T=T,
+        r=r,
+        sigma=sigma,
+        n_steps=12,
+        seed=42
+    )
 
     print("Black-Scholes call price:", bs_price)
     print("Monte Carlo call price:", mc_price)
@@ -114,3 +204,11 @@ if __name__ == "__main__":
     print("-" * 60)
     print(f"{'Delta':<20}{bs_delta:>18.6f}{mc_delta:>18.6f}")
     print(f"{'Gamma':<20}{bs_gamma:>18.6f}{mc_gamma:>18.6f}")
+
+    print("\nOne-Path Delta Hedging Result")
+    print("-" * 60)
+    print("Initial option price:", hedge_result["option_price_0"])
+    print("Terminal stock price:", hedge_result["terminal_stock"])
+    print("Option payoff at maturity:", hedge_result["option_payoff"])
+    print("Terminal hedge portfolio value:", hedge_result["terminal_portfolio"])
+    print("Hedging error (portfolio - payoff):", hedge_result["hedging_error"])
