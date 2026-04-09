@@ -54,7 +54,6 @@ def simulate_single_gbm_path(S0, T, r, sigma, n_steps, seed=None):
 def black_scholes_call_price(S0, K, T, r, sigma):
     d1 = (math.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
-
     return S0 * normal_cdf(d1) - K * math.exp(-r * T) * normal_cdf(d2)
 
 
@@ -105,24 +104,20 @@ def monte_carlo_delta_gamma(S0, K, T, r, sigma, n_sims, h=1.0, seed=42):
     return delta_mc, gamma_mc
 
 
-def simulate_delta_hedge_one_path(S0, K, T, r, sigma, n_steps, seed=None):
+def simulate_delta_hedge_one_path_with_costs(
+    S0, K, T, r, sigma, n_steps, transaction_cost_bps=0.0, seed=None
+):
     path = simulate_single_gbm_path(S0, T, r, sigma, n_steps, seed=seed)
     dt = T / n_steps
+    k = transaction_cost_bps / 10000.0
 
     option_price_0 = black_scholes_call_price(S0, K, T, r, sigma)
     delta_0 = black_scholes_call_delta_tau(S0, K, T, r, sigma)
 
+    initial_trade_cost = abs(delta_0) * S0 * k
     stock_position = delta_0
-    cash_account = option_price_0 - stock_position * S0
-
-    hedge_history = [{
-        "step": 0,
-        "time": 0.0,
-        "stock_price": path[0],
-        "delta": stock_position,
-        "cash": cash_account,
-        "portfolio_value": stock_position * path[0] + cash_account
-    }]
+    cash_account = option_price_0 - stock_position * S0 - initial_trade_cost
+    total_transaction_cost = initial_trade_cost
 
     for i in range(1, n_steps + 1):
         t = i * dt
@@ -134,19 +129,13 @@ def simulate_delta_hedge_one_path(S0, K, T, r, sigma, n_steps, seed=None):
         if i < n_steps:
             new_delta = black_scholes_call_delta_tau(S, K, tau, r, sigma)
             delta_change = new_delta - stock_position
+            trade_cost = abs(delta_change) * S * k
+
             cash_account -= delta_change * S
+            cash_account -= trade_cost
+
+            total_transaction_cost += trade_cost
             stock_position = new_delta
-
-        portfolio_value = stock_position * S + cash_account
-
-        hedge_history.append({
-            "step": i,
-            "time": t,
-            "stock_price": S,
-            "delta": stock_position,
-            "cash": cash_account,
-            "portfolio_value": portfolio_value
-        })
 
     terminal_stock = path[-1]
     option_payoff = max(terminal_stock - K, 0.0)
@@ -154,14 +143,104 @@ def simulate_delta_hedge_one_path(S0, K, T, r, sigma, n_steps, seed=None):
     hedging_error = terminal_portfolio - option_payoff
 
     return {
-        "path": path,
-        "hedge_history": hedge_history,
-        "option_price_0": option_price_0,
         "terminal_stock": terminal_stock,
         "option_payoff": option_payoff,
         "terminal_portfolio": terminal_portfolio,
-        "hedging_error": hedging_error
+        "hedging_error": hedging_error,
+        "total_transaction_cost": total_transaction_cost
     }
+
+
+def simulate_delta_hedge_many_paths_with_costs(
+    S0, K, T, r, sigma, n_steps, n_paths, transaction_cost_bps=0.0, base_seed=42
+):
+    errors = []
+    costs = []
+
+    for i in range(n_paths):
+        result = simulate_delta_hedge_one_path_with_costs(
+            S0=S0,
+            K=K,
+            T=T,
+            r=r,
+            sigma=sigma,
+            n_steps=n_steps,
+            transaction_cost_bps=transaction_cost_bps,
+            seed=base_seed + i
+        )
+
+        errors.append(result["hedging_error"])
+        costs.append(result["total_transaction_cost"])
+
+    errors = np.array(errors)
+    costs = np.array(costs)
+
+    return {
+        "hedging_errors": errors,
+        "transaction_costs": costs,
+        "mean_error": errors.mean(),
+        "std_error": errors.std(ddof=1),
+        "rmse": np.sqrt(np.mean(errors**2)),
+        "mean_abs_error": np.mean(np.abs(errors)),
+        "mean_cost": costs.mean(),
+        "std_cost": costs.std(ddof=1),
+        "min_error": errors.min(),
+        "max_error": errors.max()
+    }
+
+
+def run_hedging_frequency_study_with_costs(
+    S0, K, T, r, sigma, hedge_steps_list, n_paths, transaction_cost_bps=0.0, base_seed=42
+):
+    results = []
+
+    for n_steps in hedge_steps_list:
+        study = simulate_delta_hedge_many_paths_with_costs(
+            S0=S0,
+            K=K,
+            T=T,
+            r=r,
+            sigma=sigma,
+            n_steps=n_steps,
+            n_paths=n_paths,
+            transaction_cost_bps=transaction_cost_bps,
+            base_seed=base_seed
+        )
+
+        results.append({
+            "n_steps": n_steps,
+            "mean_error": study["mean_error"],
+            "std_error": study["std_error"],
+            "rmse": study["rmse"],
+            "mean_abs_error": study["mean_abs_error"],
+            "mean_cost": study["mean_cost"],
+            "min_error": study["min_error"],
+            "max_error": study["max_error"]
+        })
+
+    return results
+
+
+def print_hedging_study_table_with_costs(results, transaction_cost_bps):
+    print(f"\nMany-Path Delta Hedging Study with Transaction Cost = {transaction_cost_bps:.1f} bps")
+    print("-" * 110)
+    print(
+        f"{'Steps':>8} | {'Mean Error':>12} | {'Std Error':>12} | {'RMSE':>10} | "
+        f"{'Mean |Error|':>12} | {'Mean Cost':>10} | {'Min Error':>12} | {'Max Error':>12}"
+    )
+    print("-" * 110)
+
+    for row in results:
+        print(
+            f"{row['n_steps']:8d} | "
+            f"{row['mean_error']:12.6f} | "
+            f"{row['std_error']:12.6f} | "
+            f"{row['rmse']:10.6f} | "
+            f"{row['mean_abs_error']:12.6f} | "
+            f"{row['mean_cost']:10.6f} | "
+            f"{row['min_error']:12.6f} | "
+            f"{row['max_error']:12.6f}"
+        )
 
 
 if __name__ == "__main__":
@@ -182,16 +261,6 @@ if __name__ == "__main__":
     bs_gamma = black_scholes_call_gamma(S0, K, T, r, sigma)
     mc_delta, mc_gamma = monte_carlo_delta_gamma(S0, K, T, r, sigma, n_sims, h=h, seed=42)
 
-    hedge_result = simulate_delta_hedge_one_path(
-        S0=S0,
-        K=K,
-        T=T,
-        r=r,
-        sigma=sigma,
-        n_steps=12,
-        seed=42
-    )
-
     print("Black-Scholes call price:", bs_price)
     print("Monte Carlo call price:", mc_price)
     print("Monte Carlo standard error:", mc_std_error)
@@ -205,10 +274,19 @@ if __name__ == "__main__":
     print(f"{'Delta':<20}{bs_delta:>18.6f}{mc_delta:>18.6f}")
     print(f"{'Gamma':<20}{bs_gamma:>18.6f}{mc_gamma:>18.6f}")
 
-    print("\nOne-Path Delta Hedging Result")
-    print("-" * 60)
-    print("Initial option price:", hedge_result["option_price_0"])
-    print("Terminal stock price:", hedge_result["terminal_stock"])
-    print("Option payoff at maturity:", hedge_result["option_payoff"])
-    print("Terminal hedge portfolio value:", hedge_result["terminal_portfolio"])
-    print("Hedging error (portfolio - payoff):", hedge_result["hedging_error"])
+    transaction_cost_bps = 5.0
+    hedge_steps_list = [12, 26, 52, 252]
+
+    results = run_hedging_frequency_study_with_costs(
+        S0=S0,
+        K=K,
+        T=T,
+        r=r,
+        sigma=sigma,
+        hedge_steps_list=hedge_steps_list,
+        n_paths=1000,
+        transaction_cost_bps=transaction_cost_bps,
+        base_seed=42
+    )
+
+    print_hedging_study_table_with_costs(results, transaction_cost_bps)
