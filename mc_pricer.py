@@ -15,11 +15,20 @@ def validate_inputs(S0, T, r, sigma, n_sims, n_steps=None):
         raise ValueError("n_steps must be positive.")
 
 
-def simulate_terminal_prices(S0, T, r, sigma, n_sims, seed=None):
+def normal_cdf(x):
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def normal_pdf(x):
+    return (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * x * x)
+
+
+def simulate_terminal_prices(S0, T, r, sigma, n_sims, seed=None, Z=None):
     validate_inputs(S0, T, r, sigma, n_sims)
 
-    rng = np.random.default_rng(seed)
-    Z = rng.standard_normal(n_sims)
+    if Z is None:
+        rng = np.random.default_rng(seed)
+        Z = rng.standard_normal(n_sims)
 
     drift = (r - 0.5 * sigma**2) * T
     diffusion = sigma * np.sqrt(T) * Z
@@ -28,20 +37,25 @@ def simulate_terminal_prices(S0, T, r, sigma, n_sims, seed=None):
     return ST
 
 
-def normal_cdf(x):
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-
 def black_scholes_call_price(S0, K, T, r, sigma):
     d1 = (math.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
 
-    call_price = S0 * normal_cdf(d1) - K * math.exp(-r * T) * normal_cdf(d2)
-    return call_price
+    return S0 * normal_cdf(d1) - K * math.exp(-r * T) * normal_cdf(d2)
 
 
-def monte_carlo_call_price(S0, K, T, r, sigma, n_sims, seed=None):
-    ST = simulate_terminal_prices(S0, T, r, sigma, n_sims, seed=seed)
+def black_scholes_call_delta(S0, K, T, r, sigma):
+    d1 = (math.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    return normal_cdf(d1)
+
+
+def black_scholes_call_gamma(S0, K, T, r, sigma):
+    d1 = (math.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    return normal_pdf(d1) / (S0 * sigma * math.sqrt(T))
+
+
+def monte_carlo_call_price(S0, K, T, r, sigma, n_sims, seed=None, Z=None):
+    ST = simulate_terminal_prices(S0, T, r, sigma, n_sims, seed=seed, Z=Z)
 
     payoffs = np.maximum(ST - K, 0.0)
     discounted_payoffs = np.exp(-r * T) * payoffs
@@ -55,44 +69,18 @@ def monte_carlo_call_price(S0, K, T, r, sigma, n_sims, seed=None):
     return price_estimate, std_error, ci_lower, ci_upper
 
 
-def run_convergence_analysis(S0, K, T, r, sigma, sim_counts, base_seed=42):
-    results = []
+def monte_carlo_delta_gamma(S0, K, T, r, sigma, n_sims, h=1.0, seed=42):
+    rng = np.random.default_rng(seed)
+    Z = rng.standard_normal(n_sims)
 
-    for n_sims in sim_counts:
-        mc_price, std_error, ci_lower, ci_upper = monte_carlo_call_price(
-            S0, K, T, r, sigma, n_sims, seed=base_seed
-        )
+    price_up, _, _, _ = monte_carlo_call_price(S0 + h, K, T, r, sigma, n_sims, Z=Z)
+    price_mid, _, _, _ = monte_carlo_call_price(S0, K, T, r, sigma, n_sims, Z=Z)
+    price_down, _, _, _ = monte_carlo_call_price(S0 - h, K, T, r, sigma, n_sims, Z=Z)
 
-        results.append({
-            "n_sims": n_sims,
-            "mc_price": mc_price,
-            "std_error": std_error,
-            "ci_lower": ci_lower,
-            "ci_upper": ci_upper
-        })
+    delta_mc = (price_up - price_down) / (2.0 * h)
+    gamma_mc = (price_up - 2.0 * price_mid + price_down) / (h ** 2)
 
-    return results
-
-
-def print_convergence_table(results, bs_price):
-    print("\nConvergence Analysis")
-    print("-" * 95)
-    print(
-        f"{'Sims':>10} | {'MC Price':>12} | {'Std Error':>12} | "
-        f"{'95% CI Lower':>12} | {'95% CI Upper':>12} | {'|MC-BS|':>12}"
-    )
-    print("-" * 95)
-
-    for row in results:
-        diff = abs(row["mc_price"] - bs_price)
-        print(
-            f"{row['n_sims']:10d} | "
-            f"{row['mc_price']:12.6f} | "
-            f"{row['std_error']:12.6f} | "
-            f"{row['ci_lower']:12.6f} | "
-            f"{row['ci_upper']:12.6f} | "
-            f"{diff:12.6f}"
-        )
+    return delta_mc, gamma_mc
 
 
 if __name__ == "__main__":
@@ -101,12 +89,28 @@ if __name__ == "__main__":
     T = 1.0
     r = 0.05
     sigma = 0.20
+    n_sims = 100000
+    h = 1.0
 
+    mc_price, mc_std_error, ci_lower, ci_upper = monte_carlo_call_price(
+        S0, K, T, r, sigma, n_sims, seed=42
+    )
     bs_price = black_scholes_call_price(S0, K, T, r, sigma)
 
+    bs_delta = black_scholes_call_delta(S0, K, T, r, sigma)
+    bs_gamma = black_scholes_call_gamma(S0, K, T, r, sigma)
+
+    mc_delta, mc_gamma = monte_carlo_delta_gamma(S0, K, T, r, sigma, n_sims, h=h, seed=42)
+
     print("Black-Scholes call price:", bs_price)
+    print("Monte Carlo call price:", mc_price)
+    print("Monte Carlo standard error:", mc_std_error)
+    print("95% confidence interval:", (ci_lower, ci_upper))
+    print("Absolute pricing difference:", abs(mc_price - bs_price))
 
-    sim_counts = [1000, 5000, 10000, 50000, 100000]
-    results = run_convergence_analysis(S0, K, T, r, sigma, sim_counts, base_seed=42)
-
-    print_convergence_table(results, bs_price)
+    print("\nGreeks Comparison")
+    print("-" * 60)
+    print(f"{'Metric':<20}{'Black-Scholes':>18}{'Monte Carlo':>18}")
+    print("-" * 60)
+    print(f"{'Delta':<20}{bs_delta:>18.6f}{mc_delta:>18.6f}")
+    print(f"{'Gamma':<20}{bs_gamma:>18.6f}{mc_gamma:>18.6f}")
