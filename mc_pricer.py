@@ -1,3 +1,4 @@
+import math
 import numpy as np
 
 
@@ -43,21 +44,42 @@ def simulate_gbm_paths(S0, T, r, sigma, n_sims, n_steps, seed=None):
     return paths
 
 
+def normal_cdf(x):
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def black_scholes_call_price(S0, K, T, r, sigma):
+    d1 = (math.log(S0 / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+
+    call_price = S0 * normal_cdf(d1) - K * math.exp(-r * T) * normal_cdf(d2)
+    return call_price
+
+
+def monte_carlo_call_price(S0, K, T, r, sigma, n_sims, seed=None):
+    ST = simulate_terminal_prices(S0, T, r, sigma, n_sims, seed=seed)
+
+    payoffs = np.maximum(ST - K, 0.0)
+    discounted_payoffs = np.exp(-r * T) * payoffs
+
+    price_estimate = discounted_payoffs.mean()
+    std_error = discounted_payoffs.std(ddof=1) / np.sqrt(n_sims)
+
+    return price_estimate, std_error
+
+
 if __name__ == "__main__":
     S0 = 100
+    K = 100
     T = 1.0
     r = 0.05
     sigma = 0.20
-    n_sims = 10000
-    n_steps = 252
+    n_sims = 100000
 
-    ST = simulate_terminal_prices(S0, T, r, sigma, n_sims, seed=42)
-    paths = simulate_gbm_paths(S0, T, r, sigma, n_sims, n_steps, seed=42)
+    mc_price, mc_std_error = monte_carlo_call_price(S0, K, T, r, sigma, n_sims, seed=42)
+    bs_price = black_scholes_call_price(S0, K, T, r, sigma)
 
-    print("Terminal prices shape:", ST.shape)
-    print("Paths shape:", paths.shape)
-    print("First path first 5 values:", paths[0, :5])
-    print("Mean terminal price:", ST.mean())
-    print("Risk-neutral expected terminal price:", S0 * np.exp(r * T))
-    print("All path values positive:", np.all(paths > 0))
-    print("Mean path terminal price:", paths[:, -1].mean())
+    print("Monte Carlo call price:", mc_price)
+    print("Monte Carlo standard error:", mc_std_error)
+    print("Black-Scholes call price:", bs_price)
+    print("Absolute pricing difference:", abs(mc_price - bs_price))
