@@ -28,22 +28,6 @@ def simulate_terminal_prices(S0, T, r, sigma, n_sims, seed=None):
     return ST
 
 
-def simulate_gbm_paths(S0, T, r, sigma, n_sims, n_steps, seed=None):
-    validate_inputs(S0, T, r, sigma, n_sims, n_steps)
-
-    rng = np.random.default_rng(seed)
-    dt = T / n_steps
-
-    Z = rng.standard_normal((n_sims, n_steps))
-    increments = (r - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * Z
-
-    log_paths = np.cumsum(increments, axis=1)
-    log_paths = np.column_stack([np.zeros(n_sims), log_paths])
-
-    paths = S0 * np.exp(log_paths)
-    return paths
-
-
 def normal_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
@@ -65,7 +49,50 @@ def monte_carlo_call_price(S0, K, T, r, sigma, n_sims, seed=None):
     price_estimate = discounted_payoffs.mean()
     std_error = discounted_payoffs.std(ddof=1) / np.sqrt(n_sims)
 
-    return price_estimate, std_error
+    ci_lower = price_estimate - 1.96 * std_error
+    ci_upper = price_estimate + 1.96 * std_error
+
+    return price_estimate, std_error, ci_lower, ci_upper
+
+
+def run_convergence_analysis(S0, K, T, r, sigma, sim_counts, base_seed=42):
+    results = []
+
+    for n_sims in sim_counts:
+        mc_price, std_error, ci_lower, ci_upper = monte_carlo_call_price(
+            S0, K, T, r, sigma, n_sims, seed=base_seed
+        )
+
+        results.append({
+            "n_sims": n_sims,
+            "mc_price": mc_price,
+            "std_error": std_error,
+            "ci_lower": ci_lower,
+            "ci_upper": ci_upper
+        })
+
+    return results
+
+
+def print_convergence_table(results, bs_price):
+    print("\nConvergence Analysis")
+    print("-" * 95)
+    print(
+        f"{'Sims':>10} | {'MC Price':>12} | {'Std Error':>12} | "
+        f"{'95% CI Lower':>12} | {'95% CI Upper':>12} | {'|MC-BS|':>12}"
+    )
+    print("-" * 95)
+
+    for row in results:
+        diff = abs(row["mc_price"] - bs_price)
+        print(
+            f"{row['n_sims']:10d} | "
+            f"{row['mc_price']:12.6f} | "
+            f"{row['std_error']:12.6f} | "
+            f"{row['ci_lower']:12.6f} | "
+            f"{row['ci_upper']:12.6f} | "
+            f"{diff:12.6f}"
+        )
 
 
 if __name__ == "__main__":
@@ -74,12 +101,12 @@ if __name__ == "__main__":
     T = 1.0
     r = 0.05
     sigma = 0.20
-    n_sims = 100000
 
-    mc_price, mc_std_error = monte_carlo_call_price(S0, K, T, r, sigma, n_sims, seed=42)
     bs_price = black_scholes_call_price(S0, K, T, r, sigma)
 
-    print("Monte Carlo call price:", mc_price)
-    print("Monte Carlo standard error:", mc_std_error)
     print("Black-Scholes call price:", bs_price)
-    print("Absolute pricing difference:", abs(mc_price - bs_price))
+
+    sim_counts = [1000, 5000, 10000, 50000, 100000]
+    results = run_convergence_analysis(S0, K, T, r, sigma, sim_counts, base_seed=42)
+
+    print_convergence_table(results, bs_price)
