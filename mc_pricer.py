@@ -1,3 +1,7 @@
+"""
+Monte Carlo option pricer with Black-Scholes benchmark, Greeks,
+discrete delta hedging, and transaction-cost analysis.
+"""
 import math
 import numpy as np
 
