@@ -1,3 +1,4 @@
-numpy==2.4.4
-pytest
-
+# Prefer `pip install -e ".[dev]"` (see README). This file is kept for
+# `pip install -r requirements.txt` users.
+numpy>=1.24
+pytest>=7
