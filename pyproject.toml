@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mc-pricer"
+version = "0.2.0"
+description = "Monte Carlo European option pricer with Black-Scholes benchmark, Greeks, variance reduction and delta-hedging analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+fast = ["scipy>=1.10"]          # faster vectorised normal CDF in the hedging loop
+dev = ["pytest>=7"]
+examples = ["matplotlib>=3.7"]
+
+[project.scripts]
+mc-pricer = "mc_pricer.cli:main"
+
+[tool.setuptools]
+packages = ["mc_pricer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = ["error"]
